@@ -1,0 +1,23 @@
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from routers import tareas, materias
+
+app = FastAPI(
+    title="CampusStudy - API Gateway",
+    description="Punto único de entrada e integración de microservicios",
+    version="1.0.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+for r in (tareas, materias):
+    app.include_router(r.router)
+
+@app.get("/health", tags=["Sistema"])
+def health():
+    return {"status": "ok", "servicio": "api-gateway"}
