@@ -266,9 +266,6 @@ lo reutilizado/adaptado:
 - Envoltura estándar `data / error / meta`, catálogo de endpoints, códigos de error y reglas
   de resiliencia provienen directamente del contrato (`Contrato_API_Grupo5_CampusStudy`).
 
-> **No se pudo leer** el PDF *"Entrega #2 CampusStudy.pdf"* (el modelo no procesa PDF).
-> El contrato sí se incorporó, extraído de su versión `.docx`
-> (`Contrato_API_Grupo5_CampusStudy.docx`).
 
 ---
 
