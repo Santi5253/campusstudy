@@ -89,18 +89,28 @@ conformación de grupos de estudio.
 
 ## 3. Arquitectura propuesta del sistema distribuido
 
-```mermaid
-flowchart TB
-    F[Front - Grupo 6] --> API[API / Gateway - Grupo 5]
-    API --> AUTH[Usuarios-Autenticación - Grupo 8]
-    API --> MAT[Materias - Grupo 9]
-    API --> TAR[Tareas - Grupo 1]
-    API --> GRU[Grupos - Grupo 2]
-    API --> NOT[Notificaciones - Grupo 7]
-    API --> EST[Estadísticas - Grupo 4]
-    API -. eventos async .-> EST
-    GRU --> NOT
-    PRU[Pruebas de integración - Grupo 3] -. valida .-> API
+```
+                         Front  (Grupo 6)
+                              |
+                         REST / JSON
+                              v
+                 +---------------------------+
+                 |   API / Gateway (Grupo 5) |
+                 |  entrada + orquestacion   |
+                 +------------+--------------+
+                              |
+     +------------+-----------+-----------+------------+-------------+
+     v            v           v           v            v             v
+ Usuarios      Materias     Tareas      Grupos    Notificaciones  Estadisticas
+ (Grupo 8)     (Grupo 9)    (Grupo 1)  (Grupo 2)    (Grupo 7)     (Grupo 4)
+  :8081         :8083        :8085      :8082        :3000         :8000
+                                                     ^                ^
+                                                     |                |
+                                        Grupos ------+                |
+                                                                      |
+                 API ---- eventos asincronos (fire-and-forget) --------+
+
+  Grupo 3 (Pruebas de integracion) valida la comunicacion a traves de la API.
 ```
 
 > El diagrama general del sistema (Miro) se entrega de forma compartida; aquí se resume el
@@ -189,18 +199,25 @@ resiliencia).
 
 **Capas (separación de responsabilidades):**
 
-```mermaid
-flowchart LR
-    R[Routers / Controllers] --> S[Services]
-    R --> C[Clients / Adapters]
-    C --> D[(Servicios internos vía REST)]
-    S --> C
-    R --> E[Envelope / Errors]
-    C --> CB[Circuit Breaker + Cache]
-    R --> EV[Events Publisher - async]
-    EV -.-> EST[(Estadísticas)]
-    SEC[Security / JWT] --> R
-    CFG[Config / Settings] --> R
+```
+  Solicitud (Front)
+        |
+        v
+  [ Routers / Controllers ] ---> [ Services (matching, agregacion) ]
+        |                                 |
+        |                                 v
+        |                        [ Clients / Adaptadores REST ]
+        |                                 |
+        |                                 v
+        |                        ( Servicios internos ) <-- REST
+        v
+  [ Transversal: Envoltura / Errores / request_id ]
+        |
+        +--> [ Circuit Breaker + Cache ]
+        |
+        +--> [ Events Publisher ] -- async --> ( Estadisticas )
+
+  [ Security (JWT) ] y [ Config (Settings) ] alimentan a Routers.
 ```
 
 | Capa | Carpeta | Responsabilidad |
@@ -220,76 +237,77 @@ flowchart LR
 ## 7. Flujo del servicio
 
 ### 7.1 Login y consulta de perfil
-```mermaid
-sequenceDiagram
-    participant FE as Front (Grupo 6)
-    participant API as API (Grupo 5)
-    participant AU as Usuarios-Autenticación
-    FE->>API: POST /api/v1/auth/login {correo, password}
-    API->>AU: POST /api/v1/auth/login {email, password}
-    AU-->>API: {usuario_id, token, rol}
-    API-->>FE: 200 {data:{token,...}, meta:{request_id}}
-    FE->>API: GET /api/v1/auth/me (Bearer)
-    API->>AU: GET /api/v1/users/{id}
-    AU-->>API: perfil
-    API-->>FE: 200 {data:{perfil}}
+```
+Front            API (Grupo 5)         Usuarios-Autenticacion
+  |                    |                        |
+  | POST /auth/login   |                        |
+  |------------------->|  POST /auth/login      |
+  |                    |----------------------->|
+  |                    |  {usuario_id, token,rol}|
+  |                    |<-----------------------|
+  | 200 {data, meta}   |                        |
+  |<-------------------|                        |
+  |                    |                        |
+  | GET /auth/me (Bearer)                       |
+  |------------------->|  GET /users/{id}       |
+  |                    |----------------------->|
+  |                    |  perfil                |
+  |                    |<-----------------------|
+  | 200 {data:perfil}  |                        |
+  |<-------------------|                        |
 ```
 
 ### 7.2 Operación agregada (resumen del usuario)
-```mermaid
-sequenceDiagram
-    participant FE as Front
-    participant API as API
-    participant AU as Usuarios
-    participant MA as Materias
-    participant TA as Tareas
-    participant GR as Grupos
-    FE->>API: GET /api/v1/usuarios/25/resumen
-    par En paralelo
-        API->>AU: GET /users/25
-    and
-        API->>MA: GET /materias?usuario_id=25
-    and
-        API->>TA: GET /tareas?usuario_id=25
-    and
-        API->>GR: GET /grupos
-    end
-    AU-->>API: perfil
-    MA-->>API: materias
-    TA-->>API: tareas
-    GR-->>API: grupos
-    API-->>FE: 200 {data:{...}, meta:{warnings?}}
-    Note over API: Si un bloque falla,<br/>responde lo disponible + warning
+```
+Front            API (Grupo 5)     Usuarios  Materias  Tareas  Grupos
+  |                   |               |         |        |       |
+  | GET /usuarios/25/resumen          |         |        |       |
+  |------------------>|  (llamadas en paralelo)  |        |       |
+  |                   |-------------->|         |        |       |
+  |                   |------------------------>|        |       |
+  |                   |-------------------------------->|        |
+  |                   |----------------------------------------->|
+  |                   |<-- perfil ----------------         |       |
+  |                   |<-- materias ---------------         |       |
+  |                   |<-- tareas ----------------------     |       |
+  |                   |<-- grupos ---------------------------------|
+  | 200 {data:{...}, meta:{warnings?}} |         |        |       |
+  |<------------------|               |         |        |       |
+
+  Si un bloque falla -> se responde lo disponible + advertencia en meta.warnings
 ```
 
 ### 7.3 Crear tarea y evento asíncrono
-```mermaid
-sequenceDiagram
-    participant FE as Front
-    participant API as API
-    participant TA as Tareas
-    participant EV as Publisher (async)
-    participant ES as Estadísticas
-    FE->>API: POST /api/v1/tareas
-    API->>TA: POST /api/v1/tareas
-    TA-->>API: tarea creada (201)
-    API-->>FE: 201 {data:{tarea}}
-    API-)EV: publicar "tarea.creada" (no bloqueante)
-    EV->>ES: POST /api/v1/eventos
+```
+Front            API (Grupo 5)        Tareas         Publisher(async)   Estadisticas
+  |                   |                 |                   |               |
+  | POST /tareas      |                 |                   |               |
+  |------------------>|  POST /tareas   |                   |               |
+  |                   |---------------->|                   |               |
+  |                   |  tarea (201)    |                   |               |
+  |                   |<----------------|                   |               |
+  | 201 {data:tarea}  |                 |                   |               |
+  |<------------------|                 |                   |               |
+  |                   |  publicar "tarea.creada" (no bloqueante)            |
+  |                   |----------------------------------->|               |
+  |                   |                                     | POST /eventos |
+  |                   |                                     |-------------->|
 ```
 
 ### 7.4 Matching
-```mermaid
-sequenceDiagram
-    participant FE as Front
-    participant API as API (Matching)
-    participant AU as Usuarios
-    participant GR as Grupos
-    FE->>API: GET /api/v1/match/companeros?materia_id=5
-    API->>AU: perfil y habilidades
-    API->>GR: grupos/integrantes
-    Note over API: Calcula % de coincidencia
-    API-->>FE: 200 {data:[{usuario_id, coincidencia, habilidades_compartidas}]}
+```
+Front            API Matching        Usuarios          Grupos
+  |                   |                 |                 |
+  | GET /match/companeros?materia_id=5  |                 |
+  |------------------>|  perfil/habilidades               |
+  |                   |---------------->|                 |
+  |                   |  grupos/integrantes               |
+  |                   |----------------------------->    |
+  |                   |<-----------------------------    |
+  |                   |<----------------|                 |
+  |                   |  Calcula % de coincidencia        |
+  | 200 {data:[{usuario_id, coincidencia, habilidades_compartidas}]}      |
+  |<------------------|                 |                 |
 ```
 
 ---
